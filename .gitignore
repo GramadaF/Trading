@@ -1,0 +1,19 @@
+# mediu virtual
+venv /
+.env
+*.env
+
+# fisiere temporare / logs
+__pycache__/
+*.log
+logs/
+*.sqlite
+*.db
+
+#arhive/jurnale
+ARHIVA/*.csv
+
+# fisiere specifice IDE
+.vscode/
+.idea/
+*.pyc
