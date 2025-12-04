@@ -65,7 +65,7 @@ CONFIG = {
     "max_spread_percent": 0.05,       # 0.05% spread maxim acceptat
 
     # 🔧 Rulare / logging
-    "paper_trading": True,            # lasa TRUE pana testam v2.0
+    "paper_trading": False,            # lasa TRUE pana testam v2.0
     "use_sandbox": False,
     "poll_interval_sec": 10,
     "logfile": "scalping_bot_gateio.log",
