@@ -6,10 +6,6 @@ import numpy as np
 import pandas as pd
 import os
 import csv
-import sys
-import traceback
-
-from telegram_notifier import TelegramNotifier
 
 # ---------------- CONFIG ---------------- #
 
@@ -69,18 +65,11 @@ CONFIG = {
     "max_spread_percent": 0.05,       # 0.05% spread maxim acceptat
 
     # 🔧 Rulare / logging
-    "paper_trading": False,           # lasa TRUE pentru test; False = trimite ordine reale
+    "paper_trading": False,            # lasa TRUE pana testam v2.0
     "use_sandbox": False,
     "poll_interval_sec": 10,
     "logfile": "scalping_bot_gateio.log",
     "journal_csv": "trades_journal.csv",
-
-    # 🔔 Telegram
-    "telegram_token": "8256063780:AAFpxKJhM-meOphu2e4k_en81xQibTZknzQ",
-    "telegram_chat_id": 6120607540,
-
-    # ❤️ Health-check: daca nu avem conexiune ok la exchange X secunde => exit(1) => systemd restart
-    "max_down_time_sec": 60 * 5,      # 5 minute
 }
 
 # -------------- LOGGING ----------------- #
@@ -92,15 +81,6 @@ logging.basicConfig(
         logging.FileHandler(CONFIG["logfile"]),
         logging.StreamHandler()
     ]
-)
-
-# ------------- TELEGRAM NOTIFIER -------- #
-
-notifier = TelegramNotifier(
-    token=CONFIG.get("telegram_token", ""),
-    chat_id=CONFIG.get("telegram_chat_id", ""),
-    enabled=bool(CONFIG.get("telegram_token") and CONFIG.get("telegram_chat_id")),
-    timeout=5,
 )
 
 # ------------- HELPER FUNCS ------------- #
@@ -141,12 +121,10 @@ def local_extrema(df: pd.DataFrame, lookback: int = 5):
 # ------------- MAIN BOT CLASS ----------- #
 
 class ScalpingBotGateIO:
-    def __init__(self, cfg: dict, notifier_obj: TelegramNotifier = None):
+    def __init__(self, cfg: dict):
         self.cfg = cfg
-        self.notifier = notifier_obj
-        self.symbol = cfg["symbol"]
-
         self.exchange = self._init_exchange()
+        self.symbol = cfg["symbol"]
         self.open_positions = []  # pozitii active (paper + live tracking)
 
         # tracking pentru filtre avansate
@@ -154,42 +132,8 @@ class ScalpingBotGateIO:
         self.loss_cooldown_until = None
         self.last_low_atr_time = None
 
-        # health-check conexiune
-        self.last_ok = time.time()
-        self.max_down_time = cfg.get("max_down_time_sec", 60 * 5)
-
         self._set_leverage_if_possible()
         self._init_journal()
-
-    # --------- NOTIFIER HELPERS --------- #
-
-    def _notify(self, msg: str):
-        if self.notifier:
-            self.notifier.send(msg)
-
-    def _notify_exception(self, prefix: str, exc: BaseException):
-        if self.notifier:
-            self.notifier.send_exception(prefix, exc)
-
-    # --------- HEALTH-CHECK HELPERS ----- #
-
-    def _mark_exchange_ok(self):
-        self.last_ok = time.time()
-
-    def _check_exchange_health(self):
-        # daca nu am mai avut un request OK de prea mult timp => Telegram + exit
-        delta = time.time() - self.last_ok
-        if delta > self.max_down_time:
-            mins = int(self.max_down_time / 60)
-            msg = (
-                f"⛔ Nu am mai avut conexiune corecta la exchange de peste {mins} minute. "
-                f"Ies si las systemd sa ma reporneasca."
-            )
-            logging.error(msg)
-            self._notify(msg)
-            raise SystemExit(1)
-
-    # ------------- INIT/SETUP ----------- #
 
     def _init_exchange(self):
         ex_class = getattr(ccxt, self.cfg["exchange"])
@@ -205,12 +149,6 @@ class ScalpingBotGateIO:
         if self.cfg.get("use_sandbox", False):
             exchange.set_sandbox_mode(True)
             logging.info("Rulez in sandbox mode Gate.io.")
-        # prima conexiune OK
-        try:
-            exchange.load_markets()
-            self._mark_exchange_ok()
-        except Exception as e:
-            logging.error(f"Eroare la load_markets: {e}")
         return exchange
 
     def _set_leverage_if_possible(self):
@@ -222,7 +160,6 @@ class ScalpingBotGateIO:
                     params={"reduceOnly": False}
                 )
                 logging.info(f"Setat leverage {self.cfg['leverage']}x pentru {self.symbol}.")
-                self._mark_exchange_ok()
             else:
                 logging.warning("Exchange-ul nu suporta set_leverage prin ccxt.")
         except Exception as e:
@@ -247,7 +184,6 @@ class ScalpingBotGateIO:
 
     def fetch_ohlcv(self, timeframe: str, limit: int = 300) -> pd.DataFrame:
         data = self.exchange.fetch_ohlcv(self.symbol, timeframe=timeframe, limit=limit)
-        self._mark_exchange_ok()
         df = pd.DataFrame(
             data,
             columns=["timestamp", "open", "high", "low", "close", "volume"]
@@ -258,7 +194,6 @@ class ScalpingBotGateIO:
 
     def get_current_price(self) -> float:
         ticker = self.exchange.fetch_ticker(self.symbol)
-        self._mark_exchange_ok()
         return float(ticker["last"])
 
     # ---------- STRATEGIE: BIAS + LEVELS + LIQ GRAB ---------- #
@@ -390,7 +325,6 @@ class ScalpingBotGateIO:
         Returneaza strict USDT disponibil (free), nu total.
         """
         balance = self.exchange.fetch_balance()
-        self._mark_exchange_ok()
 
         usdt_free = 0.0
         if "USDT" in balance and isinstance(balance["USDT"], dict):
@@ -405,7 +339,6 @@ class ScalpingBotGateIO:
         """
         try:
             market = self.exchange.market(self.symbol)
-            self._mark_exchange_ok()
         except Exception as e:
             logging.error(f"Nu am putut lua market info pentru {self.symbol}: {e}")
             return 0.0
@@ -454,6 +387,7 @@ class ScalpingBotGateIO:
             logging.warning("Qty calculata este <= 0 dupa limitarile de risc/margin.")
             return 0.0
 
+        # daca suntem in paper trading, putem sari normalizarea pentru a vedea "teoretic" ce ar face
         if self.cfg.get("paper_trading", True):
             return float(raw_qty)
 
@@ -493,17 +427,6 @@ class ScalpingBotGateIO:
             "lowest_price": entry
         }
 
-        # notificare Telegram la deschidere
-        self._notify(
-            f"📈 Pozitie {direction.upper()} deschisa\n"
-            f"Symbol: {self.symbol}\n"
-            f"Entry: {entry:.4f}\n"
-            f"SL: {sl:.4f}\n"
-            f"TP: {tp:.4f}\n"
-            f"Qty: {qty:.4f}\n"
-            f"Paper: {self.cfg['paper_trading']}"
-        )
-
         if self.cfg["paper_trading"]:
             self.open_positions.append(position)
             logging.info("Paper trade salvat (nu am trimis ordin real Gate.io).")
@@ -518,14 +441,12 @@ class ScalpingBotGateIO:
                 amount=qty,
                 params=params
             )
-            self._mark_exchange_ok()
             position["exchange_order_id"] = order.get("id")
             self.open_positions.append(position)
             logging.info(f"Ordin deschis pe Gate.io: {order}")
             logging.info("SL/TP + trailing sunt gestionate intern de bot (inchidere market).")
         except Exception as e:
             logging.error(f"Eroare la trimitere ordin Gate.io: {e}")
-            self._notify(f"❌ Eroare la trimitere ordin Gate.io: {e}")
 
     # ---------- JURNAL / INCHIDERE POZITII ---------- #
 
@@ -577,16 +498,6 @@ class ScalpingBotGateIO:
             f"pnl={pnl_usdt:.4f} USDT, R={pnl_rr if pnl_rr is not None else 'NA'}"
         )
 
-        # notificare Telegram la inchidere
-        self._notify(
-            f"📉 Pozitie {pos['direction'].upper()} inchisa ({reason})\n"
-            f"Entry: {pos['entry']:.4f}\n"
-            f"Exit: {exit_price:.4f}\n"
-            f"Qty: {pos['qty']:.4f}\n"
-            f"PnL: {pnl_usdt:.4f} USDT\n"
-            f"R: {pnl_rr if pnl_rr is not None else 'NA'}"
-        )
-
     def close_position(self, pos: dict, reason: str, exit_price: float = None):
         if pos["status"] != "open":
             return
@@ -626,15 +537,15 @@ class ScalpingBotGateIO:
                 amount=qty,
                 params=params
             )
-            self._mark_exchange_ok()
             logging.info(f"Ordin de inchidere trimis: {order}")
             pos["status"] = "closed"
             pos["closed_at"] = datetime.utcnow()
             pos["close_reason"] = reason
+
+            # putem folosi exit_price calculat de noi sau order["average"]
             self._log_trade(pos, exit_price, reason)
         except Exception as e:
             logging.error(f"Eroare la inchiderea pozitiei: {e}")
-            self._notify(f"❌ Eroare la inchiderea pozitiei: {e}")
 
     # ---------- TRAILING STOP ATR + MONITORIZARE ---------- #
 
@@ -731,7 +642,6 @@ class ScalpingBotGateIO:
 
         try:
             orderbook = self.exchange.fetch_order_book(self.symbol, limit=5)
-            self._mark_exchange_ok()
             bids = orderbook.get("bids", [])
             asks = orderbook.get("asks", [])
             if not bids or not asks:
@@ -759,11 +669,9 @@ class ScalpingBotGateIO:
 
     def run(self):
         logging.info(f"Pornit ScalpingBotGateIO pe {self.symbol}.")
-        self._notify(f"🚀 ScalpingBotGateIO a pornit pe {self.symbol} (leverage {self.cfg['leverage']}x).")
-
         while True:
             try:
-                # 1) Monitorizam mereu pozitiile existente
+                # 1) Monitorizam mereu pozitiile existente (chiar si in weekend / noaptea)
                 self.monitor_positions()
 
                 now_utc = datetime.utcnow()
@@ -775,7 +683,6 @@ class ScalpingBotGateIO:
                 if ro_weekday in (5, 6):
                     logging.info("Weekend detectat - nu deschid noi pozitii.")
                     time.sleep(self.cfg["poll_interval_sec"])
-                    self._check_exchange_health()
                     continue
 
                 # 3) Filtru ORAR (allowed_hours)
@@ -790,7 +697,6 @@ class ScalpingBotGateIO:
                         f"Este ora {ro_hour}:00 RO - in afara intervalului orar - nu caut intrari."
                     )
                     time.sleep(self.cfg["poll_interval_sec"])
-                    self._check_exchange_health()
                     continue
 
                 # 4) Filtru de "stiri" (news_blackout)
@@ -806,7 +712,6 @@ class ScalpingBotGateIO:
                         "Suntem in interval de stiri (blackout) - nu caut intrari."
                     )
                     time.sleep(self.cfg["poll_interval_sec"])
-                    self._check_exchange_health()
                     continue
 
                 # 5) Pauza dupa pierderi consecutive
@@ -817,7 +722,6 @@ class ScalpingBotGateIO:
                         f"(~{minutes_left:.1f} minute ramase) - nu caut intrari."
                     )
                     time.sleep(self.cfg["poll_interval_sec"])
-                    self._check_exchange_health()
                     continue
 
                 # 6) Pauza cand ATR a fost prea mic recent
@@ -830,13 +734,11 @@ class ScalpingBotGateIO:
                             f"astept inainte de noi intrari."
                         )
                         time.sleep(self.cfg["poll_interval_sec"])
-                        self._check_exchange_health()
                         continue
 
                 # 7) Filtru de spread / lichiditate
                 if not self.spread_ok():
                     time.sleep(self.cfg["poll_interval_sec"])
-                    self._check_exchange_health()
                     continue
 
                 # 8) Numar de pozitii deschise
@@ -844,7 +746,6 @@ class ScalpingBotGateIO:
                 if open_count >= self.cfg["max_open_trades"]:
                     logging.info("Numarul maxim de pozitii deschise atins. Astept...")
                     time.sleep(self.cfg["poll_interval_sec"])
-                    self._check_exchange_health()
                     continue
 
                 # 9) Bias HTF
@@ -853,7 +754,6 @@ class ScalpingBotGateIO:
                 if bias == "none":
                     logging.info("Fara trend clar HTF - nu iau trade-uri.")
                     time.sleep(self.cfg["poll_interval_sec"])
-                    self._check_exchange_health()
                     continue
 
                 # 10) Cautam semnal pe LTF
@@ -864,28 +764,12 @@ class ScalpingBotGateIO:
                 else:
                     logging.info("Niciun signal valid pe LTF.")
 
-                time.sleep(self.cfg["poll_interval_sec"])
-                self._check_exchange_health()
-
-            except SystemExit:
-                # propagam mai departe pentru systemd (health-check)
-                raise
             except Exception as e:
                 logging.error(f"Eroare in loop: {e}")
-                self._notify(f"⚠️ Eroare in loop: {e}")
-                time.sleep(self.cfg["poll_interval_sec"])
-                self._check_exchange_health()
+
+            time.sleep(self.cfg["poll_interval_sec"])
 
 
 if __name__ == "__main__":
-    bot = ScalpingBotGateIO(CONFIG, notifier_obj=notifier)
-    try:
-        bot.run()
-    except SystemExit as e:
-        # exit controlat (health-check) -> systemd va restarta serviciul
-        sys.exit(e.code if isinstance(e.code, int) else 1)
-    except Exception as e:
-        logging.error("💀 Botul a crapat cu exceptie necontrolata.", exc_info=True)
-        if notifier:
-            notifier.send_exception("💀 Botul a crapat cu exceptie necontrolata:", e)
-        sys.exit(1)
+    bot = ScalpingBotGateIO(CONFIG)
+    bot.run()
