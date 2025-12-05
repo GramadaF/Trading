@@ -410,6 +410,59 @@ class ScalpingBotGateIO:
             return self.last_balance
 
         return 0.0
+#≠=====================
+#CALCULATE POSITION
+#===========≠====
+def calculate_position_size(self, entry, sl):
+    """
+    Calculeaza qty in mod sigur pentru cont mic (XRP/USDT).
+    Include:
+    - protectie SL prea mic
+    - limită hard din .env (MAX_QTY)
+    - min_qty Gate.io
+    - rotunjire corecta 1 decimal
+    """
+
+    try:
+        balance = self.get_balance()
+        risk_percent = float(self.config.get("risk_per_trade", 0.005))
+        leverage = float(self.config.get("leverage", 3))
+
+        risk_amount = balance * risk_percent
+        if risk_amount <= 0:
+            self.log("[ERROR] Risk amount <=0. Return 0.")
+            return 0
+
+        stop_distance = abs(entry - sl)
+        if stop_distance < 0.0005:
+            stop_distance = 0.0005
+            self.log(f"[WARNING] SL prea mic. stop_distance ajustat la {stop_distance}")
+
+        qty = (risk_amount / stop_distance) / leverage
+
+        qty = float(f"{qty:.1f}")   # XRP = 1 decimal
+
+        min_qty = getattr(self, "symbol_min_qty", 10.0)
+        if qty < min_qty:
+            self.log(f"[INFO] Qty {qty} < min_qty {min_qty}. Ajustez la {min_qty}")
+            qty = min_qty
+
+        max_qty_env = os.getenv("MAX_QTY")
+        if max_qty_env is not None:
+            max_qty = float(max_qty_env)
+            if qty > max_qty:
+                self.log(f"[WARNING] Qty {qty} > MAX_QTY {max_qty}. Reduc qty la {max_qty}")
+                qty = max_qty
+
+        if qty <= 0:
+            self.log("[ERROR] Qty final <= 0. Return 0.")
+            return 0
+
+        return qty
+
+    except Exception as e:
+        self.log(f"[ERROR] calculate_position_size() exceptie: {e}")
+        return 0
     # ======================================================================
     # ORDERS
     # ======================================================================
