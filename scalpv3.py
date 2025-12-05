@@ -376,7 +376,7 @@ class ScalpingBotGateIO:
     # BALANCE
     # ======================================================================
 
-    def get_balance(self):
+   def get_balance(self):
     """
     Returneaza equity pentru Gate.io USDT-M Futures:
     available + unrealised pnl.
