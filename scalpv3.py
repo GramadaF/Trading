@@ -376,47 +376,40 @@ class ScalpingBotGateIO:
     # BALANCE
     # ======================================================================
 
-    def get_balance(self):
-        b = self.exchange.fetch_balance()
-        self._mark_ok()
-        usdt = b.get("USDT", {})
-        return float(usdt.get("free", 0.0))
+ def get_balance(self):
+    """
+    Returneaza equity pentru Gate.io USDT-M Futures:
+    available + unrealised pnl.
+    Cu fallback pentru API errors.
+    """
 
-    def normalize_qty(self, qty):
-        try:
-            m = self.exchange.market(self.symbol)
-            self._mark_ok()
-        except:
-            return 0
+    try:
+        acc = self.exchange.private_futures_get_settle_accounts({'settle': 'usdt'})
 
-        min_amount = m.get("limits", {}).get("amount", {}).get("min", 0.0)
-        try:
-            q = float(self.exchange.amount_to_precision(self.symbol, qty))
-        except:
-            q = qty
-        if q < min_amount:
-            return 0
-        return q
+        if not acc or 'available' not in acc[0]:
+            self.log("[ERROR] API returned invalid balance format.")
+            return getattr(self, "last_balance", 0.0)
 
-    def calc_qty(self, entry, sl):
-        balance = self.get_balance()
-        if balance <= 0:
-            return 0
-        risk_amount = balance * self.cfg["risk_per_trade"]
-        stop_dist = abs(entry - sl)
-        if stop_dist == 0:
-            return 0
+        available = float(acc[0].get("available", 0.0))
+        unrealized = float(acc[0].get("unrealised_pnl", 0.0))
 
-        qty_risk = (risk_amount / stop_dist) * self.cfg["leverage"]
-        qty_max = (balance * self.cfg["leverage"]) / entry
-        qty = min(qty_risk, qty_max)
-        if qty <= 0:
-            return 0
+        equity = available + unrealized
 
-        if self.cfg["paper_trading"]:
-            return qty
-        return self.normalize_qty(qty)
+        if equity < 0:
+            self.log("[WARNING] Equity negativ detectat. Ajustez la 0.")
+            equity = 0.0
 
+        self.last_balance = equity
+        return equity
+
+    except Exception as e:
+        self.log(f"[ERROR] get_balance() exception: {e}")
+
+        if hasattr(self, "last_balance"):
+            self.log(f"[WARNING] Folosesc fallback last_balance: {self.last_balance}")
+            return self.last_balance
+
+        return 0.0
     # ======================================================================
     # ORDERS
     # ======================================================================
