@@ -467,7 +467,7 @@ def calculate_position_size(self, entry, sl):
     # ORDERS
     # ======================================================================
 
-   def open_order(self, side, entry, sl, tp):
+def open_order(self, side, entry, sl, tp):
     """
     Deschide ordinul principal cu qty sigura.
     Aplică limita din .env inca o data (siguranta dubla).
