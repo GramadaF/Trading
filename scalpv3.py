@@ -467,80 +467,52 @@ def calculate_position_size(self, entry, sl):
     # ORDERS
     # ======================================================================
 
-    def open_order(self, sig):
-        direction = sig["direction"]
-        entry = sig["entry"]
-        sl = sig["sl"]
-        tp = sig["tp"]
+   def open_order(self, side, entry, sl, tp):
+    """
+    Deschide ordinul principal cu qty sigura.
+    Aplică limita din .env inca o data (siguranta dubla).
+    """
 
-        qty = self.calc_qty(entry, sl)
+    try:
+        qty = self.calculate_position_size(entry, sl)
+
+        max_qty_env = os.getenv("MAX_QTY")
+        if max_qty_env is not None:
+            max_qty = float(max_qty_env)
+            if qty > max_qty:
+                self.log(f"[WARNING] Qty {qty} > MAX_QTY {max_qty} (hard). Ajustez la {max_qty}")
+                qty = max_qty
+
         if qty <= 0:
-            logging.warning("Qty invalida.")
-            return
+            self.log("[ERROR] Qty invalida. Nu trimit ordin.")
+            return None
 
-        side = "buy" if direction=="long" else "sell"
-        pos = {
-            "direction":direction,
-            "entry":entry,
-            "sl":sl,
-            "initial_sl":sl,
-            "tp":tp,
-            "qty":qty,
-            "status":"open",
-            "opened_at":datetime.utcnow(),
-            "exchange_order_id":None,
-            "highest_price":entry,
-            "lowest_price":entry
-        }
+        self.log(f"[INFO] Trimit {side.upper()} qty={qty} entry={entry} sl={sl} tp={tp}")
 
-        self._notify(
-            f"📈 Pozitie {direction.upper()} deschisa\n"
-            f"Entry: {entry}\nSL: {sl}\nTP: {tp}\nQty: {qty}\n"
+        order = self.exchange.create_order(
+            self.symbol,
+            "market",
+            side,
+            qty,
         )
 
-        if self.cfg["paper_trading"]:
-            self.open_positions.append(pos)
-            return
+        self.log(f"[SUCCESS] Ordin deschis: {order}")
 
-        try:
-            o = self.exchange.create_order(self.symbol, "market", side, qty)
-            pos["exchange_order_id"] = o.get("id")
-            self.open_positions.append(pos)
-            self._mark_ok()
-        except Exception as e:
-            logging.error("Order error:", e)
-            self._notify_exc("Order error:", e)
+        self.current_position = {
+            "side": side,
+            "entry": entry,
+            "sl": sl,
+            "tp": tp,
+            "qty": qty,
+            "order": order
+        }
 
-    def close_position(self, pos, reason, exit_price=None):
-        if pos["status"] != "open":
-            return
+        return order
 
-        if exit_price is None:
-            try:
-                exit_price = self.get_price()
-            except:
-                return
-
-        direction = pos["direction"]
-        side = "sell" if direction=="long" else "buy"
-        qty = pos["qty"]
-
-        if self.cfg["paper_trading"]:
-            pos["status"]="closed"
-            pos["closed_at"]=datetime.utcnow()
-            self._log_trade(pos, exit_price, reason)
-            return
-
-        try:
-            o = self.exchange.create_order(self.symbol, "market", side, qty, params={"reduceOnly":True})
-            pos["status"]="closed"
-            pos["closed_at"]=datetime.utcnow()
-            self._log_trade(pos, exit_price, reason)
-            self._mark_ok()
-        except Exception as e:
-            logging.error("Close error:", e)
-            self._notify_exc("Close error:", e)
-
+    except Exception as e:
+        self.log(f"[ERROR] Eroare open_order(): {e}")
+        return None
+  
     # ======================================================================
     # TRADE LOG
     # ======================================================================
